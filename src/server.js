@@ -1350,7 +1350,7 @@ proxy.on("error", (err, _req, _res) => {
   console.error("[proxy]", err);
 });
 
-app.use(async (req, res) => {
+app.use(requireSetupAuth, async (req, res) => {
   // If not configured, force users to /setup for any non-setup routes.
   if (!isConfigured() && !req.path.startsWith("/setup")) {
     return res.redirect("/setup");
@@ -1405,6 +1405,24 @@ server.on("upgrade", async (req, socket, head) => {
     socket.destroy();
     return;
   }
+
+  // Authenticate WebSocket upgrades with the same SETUP_PASSWORD used for /setup.
+  if (SETUP_PASSWORD) {
+    const header = req.headers.authorization || "";
+    const [scheme, encoded] = header.split(" ");
+    if (scheme !== "Basic" || !encoded) {
+      socket.destroy();
+      return;
+    }
+    const decoded = Buffer.from(encoded, "base64").toString("utf8");
+    const idx = decoded.indexOf(":");
+    const password = idx >= 0 ? decoded.slice(idx + 1) : "";
+    if (password !== SETUP_PASSWORD) {
+      socket.destroy();
+      return;
+    }
+  }
+
   try {
     await ensureGatewayRunning();
   } catch {
