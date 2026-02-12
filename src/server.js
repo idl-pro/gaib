@@ -1335,6 +1335,12 @@ const proxy = httpProxy.createProxyServer({
   xfwd: true,
 });
 
+proxy.on("proxyReq", (proxyReq) => {
+  if (OPENCLAW_GATEWAY_TOKEN) {
+    proxyReq.setHeader("Authorization", `Bearer ${OPENCLAW_GATEWAY_TOKEN}`);
+  }
+});
+
 proxy.on("error", (err, _req, _res) => {
   console.error("[proxy]", err);
 });
@@ -1399,6 +1405,9 @@ server.on("upgrade", async (req, socket, head) => {
   } catch {
     socket.destroy();
     return;
+  }
+  if (OPENCLAW_GATEWAY_TOKEN) {
+    req.headers.authorization = `Bearer ${OPENCLAW_GATEWAY_TOKEN}`;
   }
   proxy.ws(req, socket, head, { target: GATEWAY_TARGET });
 });
