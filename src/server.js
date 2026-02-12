@@ -207,6 +207,9 @@ async function startGateway() {
   fs.mkdirSync(STATE_DIR, { recursive: true });
   fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
 
+  // Ensure the gateway trusts the wrapper proxy so forwarded auth headers are accepted.
+  await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "gateway.trustedProxies", "loopback"]));
+
   const args = [
     "gateway",
     "run",
@@ -742,6 +745,8 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
     await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "gateway.remote.token", OPENCLAW_GATEWAY_TOKEN]));
     await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "gateway.bind", "loopback"]));
     await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "gateway.port", String(INTERNAL_GATEWAY_PORT)]));
+    // Trust the loopback proxy so the gateway accepts forwarded auth headers.
+    await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "gateway.trustedProxies", "loopback"]));
 
     // Optional: configure a custom OpenAI-compatible provider (base URL) for advanced users.
     if (payload.customProviderId?.trim() && payload.customProviderBaseUrl?.trim()) {
