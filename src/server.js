@@ -300,12 +300,27 @@ async function restartGateway() {
   return ensureGatewayRunning();
 }
 
+// Rate-limit failed auth attempts to prevent brute-force.
+const authFailures = new Map(); // ip → [timestamps]
+const AUTH_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
+const AUTH_MAX_FAILURES = 5;
+
 function requireSetupAuth(req, res, next) {
   if (!SETUP_PASSWORD) {
     return res
       .status(500)
       .type("text/plain")
       .send("SETUP_PASSWORD is not set. Set it in Railway Variables before using /setup.");
+  }
+
+  // Check rate limit before anything else.
+  const ip = req.ip;
+  const now = Date.now();
+  const failures = (authFailures.get(ip) || []).filter((t) => now - t < AUTH_WINDOW_MS);
+  authFailures.set(ip, failures);
+  if (failures.length >= AUTH_MAX_FAILURES) {
+    console.warn(`[auth] rate-limited ${ip} (${failures.length} failures in window)`);
+    return res.status(429).type("text/plain").send("Too many failed attempts. Try again later.\n");
   }
 
   const header = req.headers.authorization || "";
@@ -318,9 +333,14 @@ function requireSetupAuth(req, res, next) {
   const idx = decoded.indexOf(":");
   const password = idx >= 0 ? decoded.slice(idx + 1) : "";
   if (password !== SETUP_PASSWORD) {
+    failures.push(now);
+    console.warn(`[auth] failed attempt from ${ip} (${failures.length}/${AUTH_MAX_FAILURES})`);
     res.set("WWW-Authenticate", 'Basic realm="OpenClaw Setup"');
     return res.status(401).send("Invalid password");
   }
+
+  // Success — clear failures for this IP.
+  authFailures.delete(ip);
   return next();
 }
 
