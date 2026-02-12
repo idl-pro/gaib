@@ -92,6 +92,36 @@ const INTERNAL_GATEWAY_PORT = Number.parseInt(process.env.INTERNAL_GATEWAY_PORT 
 const INTERNAL_GATEWAY_HOST = process.env.INTERNAL_GATEWAY_HOST ?? "127.0.0.1";
 const GATEWAY_TARGET = `http://${INTERNAL_GATEWAY_HOST}:${INTERNAL_GATEWAY_PORT}`;
 
+// Baked-in workspace from Docker image (COPY workspace/ ./workspace/).
+const BAKED_WORKSPACE_DIR = path.join(process.cwd(), "workspace");
+
+/**
+ * Seed workspace: copy baked-in files to WORKSPACE_DIR if they don't already exist.
+ * Runs once at startup. Preserves bot-modified files (e.g., MEMORY.md).
+ */
+function seedWorkspace() {
+  if (!fs.existsSync(BAKED_WORKSPACE_DIR)) return;
+  if (path.resolve(BAKED_WORKSPACE_DIR) === path.resolve(WORKSPACE_DIR)) return;
+
+  fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
+
+  function copyRecursive(srcDir, destDir) {
+    for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
+      const srcPath = path.join(srcDir, entry.name);
+      const destPath = path.join(destDir, entry.name);
+      if (entry.isDirectory()) {
+        fs.mkdirSync(destPath, { recursive: true });
+        copyRecursive(srcPath, destPath);
+      } else if (entry.isFile() && !fs.existsSync(destPath)) {
+        fs.copyFileSync(srcPath, destPath);
+        console.log(`[workspace] seeded ${path.relative(WORKSPACE_DIR, destPath)}`);
+      }
+    }
+  }
+
+  copyRecursive(BAKED_WORKSPACE_DIR, WORKSPACE_DIR);
+}
+
 // Always run the built-from-source CLI entry directly to avoid PATH/global-install mismatches.
 const OPENCLAW_ENTRY = process.env.OPENCLAW_ENTRY?.trim() || "/openclaw/dist/entry.js";
 const OPENCLAW_NODE = process.env.OPENCLAW_NODE?.trim() || "node";
@@ -1109,6 +1139,15 @@ app.get("/setup/export", requireSetupAuth, async (_req, res) => {
   stream.pipe(res);
 });
 
+function isSafeRelPath(p) {
+  if (!p) return false;
+  if (p.startsWith("/") || p.startsWith("\\")) return false;
+  if (p.split("/").includes("..")) return false;
+  if (p.includes("\\")) return false;
+  if (p.includes("\0")) return false;
+  return true;
+}
+
 function isUnderDir(p, root) {
   const abs = path.resolve(p);
   const r = path.resolve(root);
@@ -1198,6 +1237,77 @@ app.post("/setup/import", requireSetupAuth, async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Workspace file API — read/write individual workspace files.
+// ---------------------------------------------------------------------------
+
+/** List all workspace files. */
+app.get("/setup/api/workspace", requireSetupAuth, (_req, res) => {
+  try {
+    fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
+    const files = [];
+    function walk(dir, prefix) {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+        if (entry.isDirectory()) {
+          walk(path.join(dir, entry.name), rel);
+        } else if (entry.isFile()) {
+          const stat = fs.statSync(path.join(dir, entry.name));
+          files.push({ path: rel, size: stat.size, mtime: stat.mtime.toISOString() });
+        }
+      }
+    }
+    walk(WORKSPACE_DIR, "");
+    res.json({ ok: true, files });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
+/** Normalize Express 5 wildcard param (returned as array of segments). */
+function resolveWorkspacePath(req) {
+  const segments = req.params.filepath;
+  const relPath = Array.isArray(segments) ? segments.join("/") : segments;
+  if (!isSafeRelPath(relPath)) return { error: 400, message: "Invalid path" };
+  const fullPath = path.join(WORKSPACE_DIR, relPath);
+  if (!isUnderDir(fullPath, WORKSPACE_DIR)) return { error: 403, message: "Path traversal denied" };
+  return { relPath, fullPath };
+}
+
+/** Read a single workspace file. */
+app.get("/setup/api/workspace/*filepath", requireSetupAuth, (req, res) => {
+  const r = resolveWorkspacePath(req);
+  if (r.error) return res.status(r.error).json({ ok: false, error: r.message });
+  if (!fs.existsSync(r.fullPath) || !fs.statSync(r.fullPath).isFile()) return res.status(404).json({ ok: false, error: "File not found" });
+  res.type("text/plain; charset=utf-8").send(fs.readFileSync(r.fullPath, "utf8"));
+});
+
+/** Write (create or overwrite) a single workspace file. */
+app.put("/setup/api/workspace/*filepath", requireSetupAuth, express.text({ type: "*/*", limit: "1mb" }), (req, res) => {
+  const r = resolveWorkspacePath(req);
+  if (r.error) return res.status(r.error).json({ ok: false, error: r.message });
+  try {
+    fs.mkdirSync(path.dirname(r.fullPath), { recursive: true });
+    fs.writeFileSync(r.fullPath, req.body, "utf8");
+    res.json({ ok: true, path: r.relPath });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
+/** Delete a single workspace file. */
+app.delete("/setup/api/workspace/*filepath", requireSetupAuth, (req, res) => {
+  const r = resolveWorkspacePath(req);
+  if (r.error) return res.status(r.error).json({ ok: false, error: r.message });
+  if (!fs.existsSync(r.fullPath)) return res.status(404).json({ ok: false, error: "File not found" });
+  try {
+    fs.rmSync(r.fullPath);
+    res.json({ ok: true, deleted: r.relPath });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
 // Proxy everything else to the gateway.
 const proxy = httpProxy.createProxyServer({
   target: GATEWAY_TARGET,
@@ -1233,6 +1343,8 @@ app.use(async (req, res) => {
 
   return proxy.web(req, res, { target: GATEWAY_TARGET });
 });
+
+seedWorkspace();
 
 const server = app.listen(PORT, "0.0.0.0", async () => {
   console.log(`[wrapper] listening on :${PORT}`);
