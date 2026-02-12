@@ -1,137 +1,110 @@
-# OpenClaw Railway Template (1‑click deploy)
+# Gaib
 
-This repo packages **OpenClaw** for Railway with a small **/setup** web wizard so users can deploy and onboard **without running any commands**.
+AI coworker for the IDL team, powered by [OpenClaw](https://openclaw.ai). Deployed on [Railway](https://railway.app).
 
-## What you get
+Forked from [clawdbot-railway-template](https://github.com/vignesh07/clawdbot-railway-template).
 
-- **OpenClaw Gateway + Control UI** (served at `/` and `/openclaw`)
-- A friendly **Setup Wizard** at `/setup` (protected by a password)
-- Persistent state via **Railway Volume** (so config/credentials/memory survive redeploys)
-- One-click **Export backup** (so users can migrate off Railway later)
-- **Import backup** from `/setup` (advanced recovery)
+## Architecture
 
-## How it works (high level)
+```
+┌──────────────────────────────────────────────┐
+│  Railway Container                           │
+│                                              │
+│  ┌─────────────┐    ┌────────────────────┐   │
+│  │   Wrapper    │───▶│  OpenClaw Gateway  │   │
+│  │  (Express)   │    │   (port 18789)     │   │
+│  │  port 8080   │    └────────────────────┘   │
+│  └─────────────┘                              │
+│        │                                      │
+│  ┌─────┴──────┐                               │
+│  │ /setup UI  │  (password-protected)         │
+│  └────────────┘                               │
+│                                               │
+│  Secrets: 1Password (op run)                  │
+│  Volume: /data (persistent state)             │
+└──────────────────────────────────────────────┘
+         │
+    Slack Socket Mode
+         │
+  ┌──────┴──────┐
+  │  IDL Slack  │
+  │  (DMs)      │
+  └─────────────┘
+```
 
-- The container runs a wrapper web server.
-- The wrapper protects `/setup` with `SETUP_PASSWORD`.
-- During setup, the wrapper runs `openclaw onboard --non-interactive ...` inside the container, writes state to the volume, and then starts the gateway.
-- After setup, **`/` is OpenClaw**. The wrapper reverse-proxies all traffic (including WebSockets) to the local gateway process.
+## Quick Reference
 
-## Railway deploy instructions (what you’ll publish as a Template)
+**Users:** Connor, Alec, Josh (via allowlist)
+**Interface:** Slack DMs
+**Integrations:** Slack, Asana
+**Model:** Claude Sonnet 4
 
-In Railway Template Composer:
+## Files
 
-1) Create a new template from this GitHub repo.
-2) Add a **Volume** mounted at `/data`.
-3) Set the following variables:
+| Path | Purpose |
+|------|---------|
+| `workspace/` | Bot personality, context, and memory |
+| `openclaw.json` | Gateway config (Slack, Anthropic, Asana) |
+| `op.env` | 1Password secret references |
+| `Dockerfile` | Builds OpenClaw from source + 1Password CLI |
+| `railway.toml` | Railway deploy settings |
+| `src/server.js` | Wrapper server (setup wizard, health, proxy) |
+| `_docs/` | Planning and reference documentation |
 
-Required:
-- `SETUP_PASSWORD` — user-provided password to access `/setup`
+## Secrets
 
-Recommended:
-- `OPENCLAW_STATE_DIR=/data/.openclaw`
-- `OPENCLAW_WORKSPACE_DIR=/data/workspace`
+All secrets are stored in the **1Password vault `Gaib`** and injected at runtime via `op run`.
 
-Optional:
-- `OPENCLAW_GATEWAY_TOKEN` — if not set, the wrapper generates one (not ideal). In a template, set it using a generated secret.
+| 1Password Item | Field | Used For |
+|----------------|-------|----------|
+| `Slack - Bot Token` | credential | Slack API calls |
+| `Slack - App Token` | credential | Slack Socket Mode |
+| `Anthropic - API Key` | credential | LLM access |
+| `Asana - PAT` | credential | Task management |
 
-Notes:
-- This template pins OpenClaw to a released version by default via Docker build arg `OPENCLAW_GIT_REF` (override if you want `main`).
-- **Backward compatibility:** The wrapper includes a shim for `CLAWDBOT_*` environment variables (logs a deprecation warning when used). `MOLTBOT_*` variables are **not** shimmed — this repo never shipped with MOLTBOT prefixes, so no existing deployments rely on them.
+**Railway env vars:**
+- `OP_SERVICE_ACCOUNT_TOKEN` — 1Password service account (only secret in Railway)
+- `SETUP_PASSWORD` — Password for the `/setup` web UI
 
-4) Enable **Public Networking** (HTTP). Railway will assign a domain.
-   - This service is configured to listen on port `8080` (including custom domains).
-5) Deploy.
+## Updating
 
-Then:
-- Visit `https://<your-app>.up.railway.app/setup`
-- Complete setup
-- Visit `https://<your-app>.up.railway.app/` and `/openclaw`
+### Workspace files (personality, context)
+Edit files in `workspace/`, commit, push. Railway auto-redeploys.
 
-## Getting chat tokens (so you don’t have to scramble)
+### Secrets
+Update the item in 1Password (`Gaib` vault), then restart the Railway service.
 
-### Telegram bot token
-1) Open Telegram and message **@BotFather**
-2) Run `/newbot` and follow the prompts
-3) BotFather will give you a token that looks like: `123456789:AA...`
-4) Paste that token into `/setup`
+### Slack allowlist
+Edit `SLACK_ALLOWLIST` in `op.env` with comma-separated Slack user IDs, commit, push.
 
-### Discord bot token
-1) Go to the Discord Developer Portal: https://discord.com/developers/applications
-2) **New Application** → pick a name
-3) Open the **Bot** tab → **Add Bot**
-4) Copy the **Bot Token** and paste it into `/setup`
-5) Invite the bot to your server (OAuth2 URL Generator → scopes: `bot`, `applications.commands`; then choose permissions)
+### OpenClaw version
+The `OPENCLAW_GIT_REF` build arg in the Dockerfile pins the version. A daily GitHub Action creates a PR to bump it.
 
-## Troubleshooting
-
-### “disconnected (1008): pairing required” / dashboard health offline
-
-This is not a crash — it means the gateway is running, but no device has been approved yet.
-
-Fix:
-- Open `/setup`
-- Use the **Debug Console**:
-  - `openclaw devices list`
-  - `openclaw devices approve <requestId>`
-
-### “unauthorized: gateway token mismatch”
-
-The Control UI connects using `gateway.remote.token` and the gateway validates `gateway.auth.token`.
-
-Fix:
-- Re-run `/setup` so the wrapper writes both tokens.
-- Or set both values to the same token in config.
-
-### “Application failed to respond” / 502 Bad Gateway
-
-Most often this means the wrapper is up, but the gateway can’t start or can’t bind.
-
-Checklist:
-- Ensure you mounted a **Volume** at `/data` and set:
-  - `OPENCLAW_STATE_DIR=/data/.openclaw`
-  - `OPENCLAW_WORKSPACE_DIR=/data/workspace`
-- Ensure **Public Networking** is enabled and `PORT=8080`.
-- Check Railway logs for the wrapper error: it will show `Gateway not ready:` with the reason.
-
-### Build OOM (out of memory) on Railway
-
-Building OpenClaw from source can exceed small memory tiers.
-
-Recommendations:
-- Use a plan with **2GB+ memory**.
-- If you see `Reached heap limit Allocation failed - JavaScript heap out of memory`, upgrade memory and redeploy.
-
-## Local smoke test
+## Local Smoke Test
 
 ```bash
-docker build -t openclaw-railway-template .
+docker build -t gaib .
 
 docker run --rm -p 8080:8080 \
   -e PORT=8080 \
   -e SETUP_PASSWORD=test \
+  -e OP_SERVICE_ACCOUNT_TOKEN=ops_... \
   -e OPENCLAW_STATE_DIR=/data/.openclaw \
   -e OPENCLAW_WORKSPACE_DIR=/data/workspace \
   -v $(pwd)/.tmpdata:/data \
-  openclaw-railway-template
+  gaib
 
 # open http://localhost:8080/setup (password: test)
 ```
 
----
+## Deploy Checklist
 
-## Official template / endorsements
+See [`_docs/railway-deploy.md`](_docs/railway-deploy.md) for full details.
 
-- Officially recommended by OpenClaw: <https://docs.openclaw.ai/railway>
-- Railway announcement (official): [Railway tweet announcing 1‑click OpenClaw deploy](https://x.com/railway/status/2015534958925013438)
-
-  ![Railway official tweet screenshot](assets/railway-official-tweet.jpg)
-
-- Endorsement from Railway CEO: [Jake Cooper tweet endorsing the OpenClaw Railway template](https://x.com/justjake/status/2015536083514405182)
-
-  ![Jake Cooper endorsement tweet screenshot](assets/railway-ceo-endorsement.jpg)
-
-- Created and maintained by **Vignesh N (@vignesh07)**
-- **1800+ deploys on Railway and counting** [Link to template on Railway](https://railway.com/deploy/clawdbot-railway-template)
-
-![Railway template deploy count](assets/railway-deploys.jpg)
+1. [ ] Create 1Password vault `Gaib` + service account
+2. [ ] Create Slack app ([manifest](_docs/slack-setup.md)) + collect tokens
+3. [ ] Collect Slack user IDs for allowlist, update `op.env`
+4. [ ] Save all credentials to 1Password vault
+5. [ ] Deploy to Railway (link this repo, add Volume at `/data`)
+6. [ ] Set Railway vars: `OP_SERVICE_ACCOUNT_TOKEN`, `SETUP_PASSWORD`
+7. [ ] Test: DM "Gaib" in Slack

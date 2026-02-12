@@ -46,6 +46,12 @@ ENV NODE_ENV=production
 RUN apt-get update \
   && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates \
+    curl \
+    unzip \
+  && curl -sSfL https://cache.agilebits.com/dist/1P/op2/pkg/v2.32.1/op_linux_amd64_v2.32.1.zip -o /tmp/op.zip \
+  && unzip /tmp/op.zip -d /usr/local/bin/ \
+  && rm /tmp/op.zip \
+  && apt-get purge -y --auto-remove curl unzip \
   && rm -rf /var/lib/apt/lists/*
 
 # `openclaw update` expects pnpm. Provide it in the runtime image.
@@ -66,8 +72,12 @@ RUN printf '%s\n' '#!/usr/bin/env bash' 'exec node /openclaw/dist/entry.js "$@"'
 
 COPY src ./src
 
+# Gaib workspace + config
+COPY workspace/ ./workspace/
+COPY op.env openclaw.json ./
+
 # The wrapper listens on this port.
 ENV OPENCLAW_PUBLIC_PORT=8080
 ENV PORT=8080
 EXPOSE 8080
-CMD ["node", "src/server.js"]
+CMD ["op", "run", "--env-file=op.env", "--", "node", "src/server.js"]

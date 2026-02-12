@@ -1,0 +1,23 @@
+# Node
+node_modules
+
+# Docs (not needed in runtime image)
+_docs/
+assets/
+
+# Dev/CI
+.github/
+.git/
+test/
+scripts/
+
+# Local env
+.env
+.claude/
+
+# OS
+.DS_Store
+
+# Build artifacts
+/dist
+*.tar.gz

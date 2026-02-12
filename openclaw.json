@@ -1,0 +1,37 @@
+{
+  "$schema": "https://openclaw.ai/config.schema.json",
+  "version": 1,
+  "gateway": {
+    "port": 18789,
+    "host": "127.0.0.1"
+  },
+  "agents": {
+    "defaults": {
+      "model": "anthropic/claude-sonnet-4-20250514",
+      "workspace": "./workspace"
+    }
+  },
+  "channels": {
+    "slack": {
+      "plugin": "slack",
+      "socketMode": true,
+      "appToken": "$SLACK_APP_TOKEN",
+      "botToken": "$SLACK_BOT_TOKEN",
+      "policy": {
+        "dm": "allowlist",
+        "allowlist": "$SLACK_ALLOWLIST"
+      }
+    }
+  },
+  "providers": {
+    "anthropic": {
+      "apiKey": "$ANTHROPIC_API_KEY"
+    }
+  },
+  "tools": {
+    "profile": "standard",
+    "env": {
+      "ASANA_PAT": "$ASANA_PAT"
+    }
+  }
+}
